@@ -1,0 +1,267 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+#
+# Simple script to create output to make use of MagicToolBox image zooming
+# Originally designed for Weebly so I can just upload images to here AND send data to weebly.
+#   - This ends up using my bandwidth for images isntead of weebly but that's fine with me as a Rest Example
+#
+
+# NOTE: Uses cpanminus for Perl packages
+# 	see : http://www.canfield.com/2/post/2014/02/install-cpanminus-in-centos-6-aka-cpanm.html
+#
+# yum install perl-devel
+# yum install perl-CPAN
+# curl -L http://cpanmin.us | perl - --sudo App::cpanminus
+# Wait a few minutes as a lot is going on
+#
+# Edit ~root/.bash_profile (root is the typical CPANM user unless you install CPANM as a local user)
+#
+
+#die "Thumbnails are being made and basic security is managed. Next is to return the HTML that builds these images. Probably in a 3 column structure.";
+
+use File::Basename;
+use Cwd qw/abs_path/;
+use JSON;                     # cpanm
+use CGI;                      # cpanm
+use Capture::Tiny qw/capture_merged/;            # cpanm
+
+# Inetgration into Weebly
+#   NOTE: THis does not require ANY CSS/Theme uploads or changes. It is all done on  per PAGE basis
+#
+#   Add CSS/JS links to the page (or to the core HTML template or a custom page layout, your choice)
+#     Pages / Select Page / Advanced Settings
+#       Header Code (same no matter what)
+#         <link rel="stylesheet" href="http://rest.canfield.com/image-zoom/assets/magiczoomplus/magiczoomplus.css"/>
+#         <script src="http://rest.canfield.com/image-zoom/assets/magiczoomplus/magiczoomplus.js"></script>
+#       Save&Edit
+#
+# On the page content use the HTML (custom) insert
+#   <div id='crg-moon'>Moon images</div>
+#   <script>
+#     jQuery.ajax({
+#       url: 'http://rest.canfield.com/image-zoom/zoom.px/astronomy/moon?callback=?',
+#       type: 'GET',
+#       dataType: 'jsonp',
+#       jsonpCallback: 'crgMoon',
+#       contentType: 'application/json',
+#       success: function(crg) {
+#         jQuery('#crg-moon').html(crg.data.html);
+#         MagicZoomPlus.refresh();
+#       }
+#     });
+#    </script>
+#    
+# The path following 'zoom.px' is the path to the folder on the REST server to process. The REST script forces access to
+# be to the 'images/' path realtive to the script location.
+#
+# The trick in the above is to make EACH such section unique on a page (betwene pages they can be the same).
+#   jsonCallBack : a unique name
+#   #crg-moon    : Must match the ID of the div (or whatever) to replace the contents of.
+#
+# The 'MagicZoomPlus.refresh()' is used to force the page to be re-evaluated. It seems silly to call this every time but until
+# a more advanced API is found to rebuild only PART of the page this is safest.
+#
+
+# Constants
+my $Thumb_Size = '208x156';     # Width, height in pixels
+
+# CSS
+my $CSS = <<"{END}";
+<style>
+.crg-zoom-cell {display: inline; padding: 5px; }
+</style>
+{END}
+$CSS =~ s{\s+}{ }s;       # New lines can cause various odd issues in the interface
+
+# Get the full URL, the sub-directory relative to starting script is what is used as the local path
+#
+
+my $CGI = CGI->new();
+
+my $Root = abs_path(dirname($0));         # Get root of images
+my $URL = $CGI->url();
+
+my $Path_Info = $CGI->path_info();        # Extra path data following script name
+{
+  my $dir = $CGI->param('folder');
+  if ($dir) {
+    $Path_Info = $dir;
+  }
+  $Path_Info =~ s{^/+}{};                   # Force path relative
+}
+$Path_Info = 'images/' . $Path_Info;
+
+
+# Resolve and sanitize Image path
+my $Image_Path;
+{
+  # verify nothing funky is going on in path passed by resolving it then verifying it is int he proper name space and a directory
+  $Image_Path = abs_path($Root . '/' . $Path_Info);
+  if ($Image_Path !~ m{^$Root/}) {
+    # probably a bad path reference
+    error(1, "Illegal request");
+  }
+  if (! -d $Image_Path || ! -r $Image_Path) {
+    # Check permissions of images
+    error(2, "Illegal access");
+  }
+}
+
+# Scan folder and creaet thumbnails
+{
+  # Thumbnail size is NOT allowed from web! To dangerous since ANYONE can call this
+  #my $thumbsize = $CGI->param('thumb') || $Thumb_Size;
+  my $thumbsize = $Thumb_Size;
+  my ($width, $height) = split(/\s*x\s*/, $thumbsize);
+  if (! $width || ! $height) {
+    error(3, "Illegal thumb spec");
+  }
+  if ($width > 512 || $height > 512) {
+    error(4, "Illegal thumb size");
+  }
+
+  # get maximum JPEG size for optimizing RAM
+  my $thumb_size = $width . 'x' . $height;
+  my $jpeg_size = $width*2 . 'x' . $height*2;
+
+  # Read all images, non-recursive. Only process common image extensions
+  my %images;
+  {
+    my $dir;
+    if (! opendir($dir, $Image_Path)) {
+      error(5, "Illegal access (2): $Image_Path " . $!);
+    }
+    while (my $file = readdir($dir)) {
+      next unless $file =~ /(^.+?)(\.thumb)?\.(jpg|gif|png)$/i;
+      next if $2;     # SKip thumbs for now, it is easier to check for them later
+      $file = $Image_Path . '/' . $file;
+      my $thumb = $Image_Path . '/' . join('.', $1, 'thumb', $3);
+
+      if (-s $file) {
+        my $key = $file;
+        $images{$key} = {
+          'path'        => $file,
+          'thumb'       => $thumb,
+        };
+        if (! -f $images{$key}{'thumb'}) {
+          # make a thumb!
+          #   jpeg:size : Limit the siz eof the jpeg passed to the converter to conserve RAM, usally 2x the thumbnail is plenty
+          #   thumbnail : Commnd to make a thumbnail, the trailing '^' means favor gravity and this case gravtiy is center.
+          #   extent : make the thumbnail this large, this grabs enough of the image so that aspect ratio is maintained
+          do_system('/usr/bin/convert', '-define', 'jpeg:size=' . $jpeg_size, $images{$key}{'path'}, '-thumbnail', $thumb_size . '^', '-gravity', 'center', '-extent', $thumb_size, $images{$key}{'thumb'});
+        }
+      }
+    }
+  }
+
+  # Build the RAW HTML for this to make things even easier on caller, sort items by name that way gallery can be organized that way
+  # Example: <a href="files/theme/moon-ptolemaeus.jpg" class="MagicZoomPlus" rel="zoom-position: inner"><img src="files/theme/moon-ptolemaeus.thumb.jpg"/></a>
+  my @html;
+  my $html_start = "$CSS<div class='crg-zoom'>";
+  my $html_end = "</div>";
+  my $row_start = "<div class='crg-zoom-row'>";
+  my $row_end = "</div>";
+  my $cell_start = "<div class='crg-zoom-cell'>";
+  my $cell_end = "</div>";
+  my $count = 0;
+  my $count_max = 4;
+  {
+    # Get the URL without the script name
+    my $url_base = dirname($URL);                                 # and YEs that works, perfect! URL is maintained but script is dropped
+
+    my $image_full;
+    my $image_thumb;
+    push @html, $html_start;
+    foreach my $key (sort {$a cmp $b} keys %images) {
+      ($image_full = $images{$key}{'path'}) =~ s{^$Root/}{};      # get image file realtive to script location
+      ($image_thumb = $images{$key}{'thumb'}) =~ s{^$Root/}{};    # get image file realtive to script location
+      $image_full = $url_base . '/' . $image_full;
+      $image_thumb = $url_base . '/' . $image_thumb;
+
+      if ($count >= $count_max) {
+        # end of column from prior pass
+        push @html, $row_end;
+        $count = 0;
+      }
+
+      if (! $count) {
+        # new column
+        push @html, $row_start;
+      }
+
+      push @html, "$cell_start<a href='$image_full' class='MagicZoomPlus' rel='zoom-position: inner'><img src='$image_thumb'/></a>$cell_end";
+      $count++;
+    }
+
+    # If not done with row then end it
+    if ($count) {
+      push @html, $row_end;
+    }
+    push @html, $html_end;
+  }
+
+  # Support JSONP so we can do cross-domain stuff. Every gallery on a page should have it's own callback name
+  my $callback = $CGI->param('callback');
+  done({'html' => join('', @html), 'files' => \%images}, $callback);
+}
+
+sub do_system {
+  my (
+    @cmd,
+  ) = @_;
+
+  my $err;
+  my $output = capture_merged { $err = system(@cmd);};
+
+  if (1) {
+    warn("Error $err on " . join(' ', @cmd));
+    if ($output) {
+      warn "With STDOUT/ERR of: " . $output;
+    }
+  }
+}
+
+sub as_html {
+  my(
+    $html,
+  ) = @_;
+
+  print $CGI->header('text/html');
+  print $html;
+  exit 0;
+}
+
+
+sub done {
+  my(
+    $data,
+    $callback,
+  ) = @_;
+
+  print $CGI->header('application/json');
+  if ($callback) {
+    print "$callback(";
+  }
+  print to_json({'error' => 0, 'data' => $data});
+  if ($callback) {
+    print ");";
+  }
+  exit 0;
+}
+
+
+sub error {
+  my(
+    $error,
+    $message,
+  ) = @_;
+
+  $error ||= 999999;
+  $message ||= 'unknown error';
+  print $CGI->header('application/json');
+  print to_json({'error' => $error, 'data' => {'message' => $message}});
+  exit 1;
+}
