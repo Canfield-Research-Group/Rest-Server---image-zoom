@@ -3,6 +3,8 @@
 Ancient site but still used on www.canfield.com astronomy. Migrating off
 of CRG NODE server so need to isolate into its own REPO.
 
+# Prepare Site
+
 The zoom.px script has not been used in ages and ages and was moved out
 of the 'image-zoom' path to root to isolate it.
 
@@ -44,10 +46,50 @@ Conversion of dynamic (using image-zoom.px) to static
 - Add an extra HTML code section after planets to initialize the Magic Zoom (ANCIENT Version)
   - `<script>MagicZoomPlus.refresh();</script>`
 
+# CloudFlare
 
-# Moon Files
+CloudFlare configuration using pages. QUick and easy for out needs but requires the entire
+site to be static.
 
-## Moon Static
+- NOTE: Free account works
+- Import DNS
+  - Export canfield.com DNS from DNS Made Easy
+    - Select domain: canfield.com
+    - Reports / As Zone File
+    - Select this file to upload after CloudFlare does intial DNS copy (incomplete)
+    - Review status presented by CloudFlare
+      - If DUPLICATE error then ignore
+      - If FAILED due to TLS being out of range, fix original record and re-export (so there is a dupcliate)
+      - Other errors will require research (I had no other issues)
+    - Change NS servers via ENOM
+- Make sure site is organized int a static structure with no private elements, see [Prepare Site](#prepare-site) 
+- Create project canfield.com
+  - Connect to account or select an existing Repo
+    - TIP: Try to limit CoudFlare to justw aht it needs. You can add one repos as needed
+    by simply selecting 'Connect', the account (which can be an existing one), adn GitHub
+    will be presented and allow you to add/remove the repors you like. 
+  - Framework: None
+  - Build Command: <blank>
+  - Build output directory: /
+  - Root Directory (advanced): /www
+    - This wil prevent any elements outside of the static area created above from being stored on CloudFlare
+  - Environmental Variables: <blank>
+- Click the 'Custom Domains'
+  - Connect to `rest.canfield.com`
+  - Since the canfield.com domain is now in CloudFlare the CloudFlare DNS will be updated
+  - NOTE: It was not strictly needed to do this as a CNAME from DnsMadeEasy would also work
+  but we are playing with CloudFlare capabilities so the entire DNS was moved while
+  leaving it on DNSMade easy in case it all goes horrible wrong.
+    - DNS and NameServers can take 24-48 hours. The TLS for the site moved was only 600 seconds
+  so that will nto be an issue. Kepe old DNS and servers active until it can be confirmed that
+  DNS/NS have fully propogated.
+
+
+# Appendix
+
+## Moon Files
+
+### Moon Static
 
 - Fetch from live site (before it was deactivated)
   - `curl http://rest.canfield.com/image-zoom/zoom.px/astronomy/moon > moon.json`
@@ -96,7 +138,7 @@ Conversion of dynamic (using image-zoom.px) to static
 </div>
 ```
 
-## Moon Dynamic (Deprecated)
+### Moon Dynamic (Deprecated)
 
 ```html
 <div id='crg-moon'>Moon images</div>
@@ -124,9 +166,9 @@ jQuery.ajax({
 ```
 
 
-# Planet files
+## Planet files
 
-## Planets Static 
+### Planets Static 
 
 - Fetch from live site (before it was deactivated)
     - `curl http://rest.canfield.com/image-zoom/zoom.px/astronomy/planets > plantes.json`
@@ -192,7 +234,7 @@ jQuery.ajax({
 </div>
 ```
 
-## Planets Dynamic (Deprecated)
+### Planets Dynamic (Deprecated)
 
 This is the dynamic version using Perl script. Will be recreated someday OR will use some other
 service.
